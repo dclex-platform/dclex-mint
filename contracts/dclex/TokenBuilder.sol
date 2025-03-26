@@ -1,27 +1,27 @@
-// SPDX-License-Identifier: MIT
-pragma solidity ^0.8.19;
+// SPDX-License-Identifier: BUSL-1.1
+pragma solidity ^0.8.22;
 
 import "./Stock.sol";
 import "../interfaces/ITokenBuilder.sol";
 import {MASTER_ADMIN_ROLE} from "../libs/Model.sol";
 
-
 /// @title Contract holding Stocks implementation
 /// @notice Allows creating new stocks token by factory
 contract TokenBuilder is ITokenBuilder {
-
-    address immutable private factory;
+    address private immutable factory;
 
     constructor(address _factory) {
         require(_factory != address(0));
         factory = _factory;
     }
 
-
     /// @notice Create new Stocks instance. Emits symbol and token contract address. Only called by factory
     /// @param name of token
     /// @param symbol of token
-    function createToken(string memory name, string memory symbol) external returns (address) {
+    function createToken(
+        string memory name,
+        string memory symbol
+    ) external returns (address) {
         address _factory = factory;
         require(msg.sender == factory);
         Stock stock = new Stock(name, symbol, _factory);

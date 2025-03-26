@@ -1,26 +1,28 @@
-// SPDX-License-Identifier: MIT
-pragma solidity ^0.8.19;
+// SPDX-License-Identifier: BUSL-1.1
+pragma solidity ^0.8.22;
 
 import "./Security.sol";
 import "../libs/Events.sol";
-import "../libs/Model.sol";
 import "../interfaces/ISignatureUtils.sol";
 import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import "@openzeppelin/contracts/token/ERC721/extensions/ERC721URIStorage.sol";
-import "@openzeppelin/contracts/utils/Counters.sol";
-import "./ERC20Named.sol";
+import {ITransferVerifier} from "../interfaces/ITransferVerifier.sol";
 
 /// @title Digital Identity NFT for EOAs
 /// @notice Allows stocks to be transferred
 contract DigitalIdentity is Security, ERC721 {
+    struct DIDTokenData {
+        uint256 valid;
+        uint256 isContract;
+        uint256 pro;
+        bytes32 data;
+        bytes32 nationalIdHash;
+        ITransferVerifier transferVerifier;
+    }
 
-    /// @notice token id iterator
-    using Counters for Counters.Counter;
+    uint256 private currentTokenId;
 
-    /// @notice token id iterator
-    Counters.Counter private _counter;
-
-    ISignatureUtils immutable private utils;
+    ISignatureUtils private immutable utils;
 
     /// @notice mapping user -> token id (to reuse ids)
     mapping(address => uint256) private ids;
@@ -31,40 +33,57 @@ contract DigitalIdentity is Security, ERC721 {
     /// @notice token id -> TokenDetails: valid, pro, data
     mapping(uint256 => DIDTokenData) private tokens;
 
-    /// @notice uri of valid token
-    string private validURI;
+    /// @notice uri of valid user token
+    string private validUserURI;
 
-    /// @notice uri of invalid token
-    string private invalidURI;
+    /// @notice uri of invalid user token
+    string private invalidUserURI;
 
+    string private validContractURI;
+    string private invalidContractURI;
 
-    constructor(string memory _name, string memory _symbol, address _utils)
-    ERC721(_name, _symbol) {
+    constructor(
+        string memory _name,
+        string memory _symbol,
+        address _utils
+    ) ERC721(_name, _symbol) {
         require(_utils != address(0));
         utils = ISignatureUtils(_utils);
     }
 
-
     /// @notice Mints DID token to selected EOA. Only executed by admin
     /// @param account receiving DID token
-    function mintAdmin(address account, uint256 isPro, bytes32 data) external whenNotPaused onlyRole(DEFAULT_ADMIN_ROLE) {
+    function mintAdmin(
+        address account,
+        uint256 isPro,
+        bytes32 data,
+        ITransferVerifier transferVerifier
+    ) external whenNotPaused onlyRole(DEFAULT_ADMIN_ROLE) {
         if (balanceOf(account) != 0) revert AlreadyHasDID();
-        __mint(account, isPro, data);
+        bool isContract = account.code.length != 0;
+        __mint(account, isContract, isPro, data);
+        tokens[ids[account]].transferVerifier = transferVerifier;
     }
 
     /// @notice Mints DID token to selected EOA. Only receiving address can execute
     /// @param mintStruct created on DCLEX
     /// @param signature from backend
-    function mint(MintDID calldata mintStruct, bytes calldata signature) external whenNotPaused {
-        if (mintStruct.account != msg.sender) revert InvalidSender();
-        if (balanceOf(mintStruct.account) != 0) revert AlreadyHasDID();
+    function mint(
+        MintDID calldata mintStruct,
+        bytes calldata signature
+    ) external whenNotPaused {
+        address mintTo = mintStruct.account;
+        bool isContract = mintTo.code.length != 0;
+        if (!isContract && mintTo != msg.sender) revert InvalidSender();
+        if (balanceOf(mintTo) != 0) revert AlreadyHasDID();
         if (nonces[mintStruct.nonce] == TRUE) revert InvalidNonce();
 
         address creator = utils.recoverMintDID(mintStruct, signature);
         if (!hasRole(DEFAULT_ADMIN_ROLE, creator)) revert WrongSignature();
 
         nonces[mintStruct.nonce] = TRUE;
-        __mint(mintStruct.account, mintStruct.isPro, mintStruct.data);
+
+        __mint(mintTo, isContract, mintStruct.isPro, mintStruct.data);
     }
 
     /// @notice Gets NFT id by account
@@ -77,13 +96,18 @@ contract DigitalIdentity is Security, ERC721 {
     /// @notice Validate/invalidate DIDs
     /// @param _ids of tokens to perform operations on
     /// @param isValids set/unset valid bools
-    function setValids(uint256[] calldata _ids, uint256[] calldata isValids) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function setValids(
+        uint256[] calldata _ids,
+        uint256[] calldata isValids
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
         uint256 len = _ids.length;
         if (len != isValids.length) revert WrongArrayLengths();
-        for (uint i = 0; i < len;) {
+        for (uint i = 0; i < len; ) {
             tokens[_ids[i]].valid = isValids[i] == TRUE ? TRUE : FALSE;
             emit Events.ChangeValid(_ids[i], isValids[i] == TRUE);
-        unchecked {++i;}
+            unchecked {
+                ++i;
+            }
         }
     }
 
@@ -94,17 +118,25 @@ contract DigitalIdentity is Security, ERC721 {
         return tokens[id].valid == TRUE;
     }
 
+    function isContract(uint256 id) public view returns (bool) {
+        return tokens[id].isContract == TRUE;
+    }
 
     /// @notice Make DID a pro/non-pro token
     /// @param _ids of tokens to perform operations on
     /// @param isPros set/unset pro bools
-    function setPros(uint256[] calldata _ids, uint256[] calldata isPros) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function setPros(
+        uint256[] calldata _ids,
+        uint256[] calldata isPros
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
         uint256 len = _ids.length;
         if (len != isPros.length) revert WrongArrayLengths();
-        for (uint i = 0; i < len;) {
+        for (uint i = 0; i < len; ) {
             tokens[_ids[i]].pro = isPros[i] == TRUE ? TRUE : FALSE;
             emit Events.ChangePro(_ids[i], isPros[i] == TRUE);
-        unchecked {++i;}
+            unchecked {
+                ++i;
+            }
         }
     }
 
@@ -115,7 +147,6 @@ contract DigitalIdentity is Security, ERC721 {
         return tokens[id].pro == TRUE;
     }
 
-
     /// @notice Get the DID additional data
     /// @param id token id
     /// @return bytes32 token data
@@ -123,51 +154,62 @@ contract DigitalIdentity is Security, ERC721 {
         return tokens[id].data;
     }
 
-
     /// @notice Set additional DID data
     /// @param id of token to perform operations on
     /// @param data to be set on the token
-    function setData(uint256 id, bytes32 data) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function setData(
+        uint256 id,
+        bytes32 data
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
         tokens[id].data = data;
-    }
-
-    /// @notice Do not allow burning
-    function _burn(uint256 tokenId) internal override(ERC721) {
-        revert NotAllowed();
     }
 
     /// @notice Mint procedure, sets DID valid by default and checks of potential reuse of token ID
     /// @param account receiver
-    function __mint(address account, uint256 isPro, bytes32 data) private {
-        if (account.code.length != 0) revert MintToContract();
+    function __mint(
+        address account,
+        bool isContract,
+        uint256 isPro,
+        bytes32 data
+    ) private {
         uint256 tokenId = ids[account];
         if (tokenId == 0) {
-            _counter.increment();
-            tokenId = _counter.current();
+            tokenId = ++currentTokenId;
             ids[account] = tokenId;
         }
         _mint(account, tokenId);
 
         tokens[tokenId].valid = TRUE;
+        tokens[tokenId].isContract = isContract ? TRUE : FALSE;
         tokens[tokenId].pro = isPro;
         tokens[tokenId].data = data;
-
-        emit Events.MintDID(account, tokenId);
+        emit Events.MintDID(account, tokenId, isContract);
     }
 
-    /// @notice Do not allow for regular transfers
-    function _transfer(
-        address from,
-        address to,
-        uint256 tokenId
-    ) internal override(ERC721) {
+    function transferFrom(
+        address,
+        address,
+        uint256
+    ) public pure override(ERC721) {
+        revert NotAllowed();
+    }
+
+    function safeTransferFrom(
+        address,
+        address,
+        uint256,
+        bytes memory
+    ) public pure override(ERC721) {
         revert NotAllowed();
     }
 
     /// @notice Security function to transfer tokens of lost access to account
     /// @param transfer did struct
     /// @param signature from backend
-    function forceTransfer(TransferDID calldata transfer, bytes calldata signature) external whenNotPaused {
+    function forceTransfer(
+        TransferDID calldata transfer,
+        bytes calldata signature
+    ) external whenNotPaused {
         if (nonces[transfer.nonce] == TRUE) revert InvalidNonce();
         if (ownerOf(transfer.id) != transfer.account) revert InvalidSender();
 
@@ -185,36 +227,59 @@ contract DigitalIdentity is Security, ERC721 {
     /// @notice Function returning URI of token. There are two types of URIs. Additionally, it checks if token exists.
     /// @param tokenId ID of token
     /// @return token URI
-    function tokenURI(uint256 tokenId) public view override(ERC721) returns (string memory) {
-        _requireMinted(tokenId);
+    function tokenURI(
+        uint256 tokenId
+    ) public view override(ERC721) returns (string memory) {
+        _requireOwned(tokenId);
 
-        if(isValid(tokenId))
-            return validURI;
-        else return invalidURI;
+        if (isValid(tokenId)) {
+            return isContract(tokenId) ? validContractURI : validUserURI;
+        } else {
+            return isContract(tokenId) ? invalidContractURI : invalidUserURI;
+        }
     }
 
-    /// @notice Sets token URI
-    /// @param valid for which token type URI is set
-    /// @param _tokenURI token URI
-    function setTokenURI(uint256 valid, string memory _tokenURI) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        if(valid == TRUE)
-            validURI = _tokenURI;
-        else
-            invalidURI = _tokenURI;
+    function setValidUserTokenURI(
+        string memory _tokenURI
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        validUserURI = _tokenURI;
     }
 
-    function supportsInterface(bytes4 interfaceId) public view override(ERC721, AccessControl) returns (bool){
+    function setInvalidUserTokenURI(
+        string memory _tokenURI
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        invalidUserURI = _tokenURI;
+    }
+
+    function setValidContractTokenURI(
+        string memory _tokenURI
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        validContractURI = _tokenURI;
+    }
+
+    function setInvalidContractTokenURI(
+        string memory _tokenURI
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        invalidContractURI = _tokenURI;
+    }
+
+    function supportsInterface(
+        bytes4 interfaceId
+    ) public view override(ERC721, AccessControl) returns (bool) {
         return super.supportsInterface(interfaceId);
     }
-
 
     /// @notice Security function in case of mistakenly transferred tokens to this address. Executed by admin
     /// @param token address
     /// @param to receiver
     /// @param amount of tokens to transfer
-    function emergencyTokenWithdrawal(address token, address to, uint256 amount) external onlyRole(DEFAULT_ADMIN_ROLE) nonReentrant {
+    function emergencyTokenWithdrawal(
+        address token,
+        address to,
+        uint256 amount
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) nonReentrant {
         if (token == address(0)) {
-            to.call{value : amount}("");
+            to.call{value: amount}("");
         } else {
             IERC20(token).transfer(to, amount);
         }
@@ -227,7 +292,43 @@ contract DigitalIdentity is Security, ERC721 {
     /// @notice check if nonce was used
     /// @param nonce nonce to check
     /// @return 0, 1, 2...
-    function getNonce(uint256 nonce) external returns(uint256) {
+    function getNonce(uint256 nonce) external returns (uint256) {
         return nonces[nonce];
+    }
+
+    /// @notice Security function to invalidate signatures
+    /// @param _nonces nonces for invalidation
+    function useNonces(
+        uint256[] calldata _nonces
+    ) external whenNotPaused onlyRole(DEFAULT_ADMIN_ROLE) {
+        uint256 len = _nonces.length;
+        for (uint256 i = 0; i < len; ) {
+            nonces[_nonces[i]] = TRUE;
+            unchecked {
+                ++i;
+            }
+        }
+    }
+
+    function verifyTransfer(
+        address from,
+        address to,
+        uint256 amount
+    ) external returns (bool) {
+        bool bothPartiesAreValid = tokens[ids[from]].valid == TRUE &&
+            tokens[ids[to]].valid == TRUE;
+        if (!bothPartiesAreValid) return false;
+        ITransferVerifier fromVerifier = tokens[ids[from]].transferVerifier;
+        if (
+            address(fromVerifier) != address(0) &&
+            !fromVerifier.verifyTransfer(from, to, amount)
+        ) {
+            return false;
+        }
+        ITransferVerifier toVerifier = tokens[ids[to]].transferVerifier;
+        if (address(toVerifier) != address(0)) {
+            return toVerifier.verifyTransfer(from, to, amount);
+        }
+        return true;
     }
 }

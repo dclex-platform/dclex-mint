@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: UNLICENSED
-pragma solidity ^0.8.19;
+// SPDX-License-Identifier: BUSL-1.1
+pragma solidity ^0.8.22;
 
 import "../libs/Model.sol";
 
@@ -16,11 +16,6 @@ interface ISignatureUtils {
 
     function recoverMintDID(
         MintDID calldata mint,
-        bytes calldata signature
-    ) external view returns (address);
-
-    function recoverMintScID(
-        MintScID calldata mint,
         bytes calldata signature
     ) external view returns (address);
 
